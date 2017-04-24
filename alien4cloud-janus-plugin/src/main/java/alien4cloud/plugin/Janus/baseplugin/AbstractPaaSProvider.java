@@ -6,25 +6,28 @@
 */
 package alien4cloud.plugin.Janus.baseplugin;
 
+import java.util.Map;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
+
 import alien4cloud.model.deployment.DeploymentTopology;
-import alien4cloud.model.topology.Capability;
-import alien4cloud.model.topology.NodeTemplate;
-import alien4cloud.model.topology.ScalingPolicy;
-import alien4cloud.model.topology.Topology;
 import alien4cloud.orchestrators.plugin.IOrchestratorPlugin;
 import alien4cloud.paas.IPaaSCallback;
-import alien4cloud.paas.exception.*;
-import alien4cloud.paas.model.*;
+import alien4cloud.paas.exception.IllegalDeploymentStateException;
+import alien4cloud.paas.exception.OperationExecutionException;
+import alien4cloud.paas.exception.PaaSAlreadyDeployedException;
+import alien4cloud.paas.exception.PaaSNotYetDeployedException;
+import alien4cloud.paas.exception.PluginConfigurationException;
+import alien4cloud.paas.model.DeploymentStatus;
+import alien4cloud.paas.model.NodeOperationExecRequest;
+import alien4cloud.paas.model.PaaSDeploymentContext;
+import alien4cloud.paas.model.PaaSTopologyDeploymentContext;
 import alien4cloud.plugin.Janus.ProviderConfig;
 import alien4cloud.topology.TopologyUtils;
 import alien4cloud.utils.MapUtil;
-import com.google.common.collect.Maps;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.web.client.RestClientException;
-
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import org.alien4cloud.tosca.model.templates.Capability;
+import org.alien4cloud.tosca.model.templates.ScalingPolicy;
+import org.alien4cloud.tosca.model.templates.Topology;
 
 @Slf4j
 public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<ProviderConfig> {
@@ -50,19 +53,15 @@ public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<Provid
                 }
             }
 
-            DeploymentStatus deploymentStatus = getStatus(deploymentId, false);
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
             switch (deploymentStatus) {
+                case UNDEPLOYED:
+                    doDeploy(deploymentContext, callback);
+                    break;
                 case DEPLOYED:
                 case DEPLOYMENT_IN_PROGRESS:
                 case UNDEPLOYMENT_IN_PROGRESS:
-                case WARNING:
-                case FAILURE:
                     throw new PaaSAlreadyDeployedException("Topology [" + deploymentId + "] is in status [" + deploymentStatus + "] and cannot be deployed");
-                case UNKNOWN:
-                    throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in status [" + deploymentStatus + "] and cannot be deployed");
-                case UNDEPLOYED:
-                    doDeploy(deploymentContext);
-                    break;
                 default:
                     throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in illegal status [" + deploymentStatus
                             + "] and cannot be deployed");
@@ -72,67 +71,31 @@ public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<Provid
         }
     }
 
+    /**
+     * Scale a node
+     *
+     * @param ctx      the deployment context
+     * @param nodeId   id of the compute node to scale up
+     * @param nbi      the number of instances to be added (if positive) or removed (if negative)
+     * @param callback
+     */
     @Override
-    public void getInstancesInformation(PaaSTopologyDeploymentContext deploymentContext, IPaaSCallback<Map<String, Map<String, InstanceInformation>>> callback) {
-        callback.onSuccess(getInstancesInformation(deploymentContext.getDeploymentPaaSId(), deploymentContext.getDeploymentTopology()));
-    }
-
-    public Map<String, Map<String, InstanceInformation>> getInstancesInformation(String deploymentId, Topology topology) {
-        Map<String, Map<String, InstanceInformation>> instanceInformations = instanceInformationsFromTopology(topology);
-
+    public void scale(PaaSDeploymentContext ctx, String nodeId, int nbi, IPaaSCallback<?> callback) {
+        log.info("scale " + nodeId);
+        String deploymentId = ctx.getDeploymentPaaSId();
         try {
-            // TODO :
-            // fillInstanceStates(deploymentId, instanceInformations, restEventEndpoint);
-
-            // fillRuntimeInformations(deploymentId, instanceInformations);
-
-            // parseAttributes(instanceInformations, statusByDeployments.get(deploymentId));
-            log.debug("------------------------------", instanceInformations);
-            return instanceInformations;
-        } catch (RestClientException e) {
-            log.warn("Error getting " + deploymentId + " deployment informations. \n\t Cause: " + e.getMessage());
-            return Maps.newHashMap();
-        } catch (Exception e) {
-            throw new PaaSTechnicalException("Error getting " + deploymentId + " deployment informations", e);
-        }
-    }
-
-    private Map<String, Map<String, InstanceInformation>> instanceInformationsFromTopology(Topology topology) {
-        Map<String, Map<String, InstanceInformation>> instanceInformations = Maps.newHashMap();
-        // fill instance informations based on the topology
-        for (Entry<String, NodeTemplate> nodeTempalteEntry : topology.getNodeTemplates().entrySet()) {
-            Map<String, InstanceInformation> nodeInstanceInfos = Maps.newHashMap();
-            // get the current number of instances
-            int currentPlannedInstances = getPlannedInstancesCount(nodeTempalteEntry.getKey(), topology);
-            for (int i = 1; i <= currentPlannedInstances; i++) {
-                // Map<String, AbstractPropertyValue> properties = nodeTempalteEntry.getValue().getProperties() == null ? null
-                // : Maps.newHashMap(nodeTempalteEntry.getValue().getProperties());
-                // Map<String, String> attributes = nodeTempalteEntry.getValue().getAttributes() == null ? null
-                // : Maps.newHashMap(nodeTempalteEntry.getValue().getAttributes());
-                // Map<String, String> runtimeProperties = Maps.newHashMap();
-                // TODO remove thoses infos
-                // InstanceInformation instanceInfo = new InstanceInformation(ToscaNodeLifecycleConstants.INITIAL, InstanceStatus.PROCESSING, properties,
-                // attributes, null);
-                // nodeInstanceInfos.put(String.valueOf(i), instanceInfo);
+            providerLock.writeLock().lock();
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
+            switch (deploymentStatus) {
+                case DEPLOYED:
+                    doScale(ctx, nodeId, nbi, callback);
+                    break;
+                default:
+                    throw new IllegalDeploymentStateException("Application [" + deploymentId + "] is in status [" + deploymentStatus + "] and cannot be scaled");
             }
-            instanceInformations.put(nodeTempalteEntry.getKey(), nodeInstanceInfos);
+        } finally {
+            providerLock.writeLock().unlock();
         }
-        return instanceInformations;
-    }
-
-    private int getPlannedInstancesCount(String nodeTemplateId, Topology topology) {
-        Capability scalableCapability = TopologyUtils.getScalableCapability(topology, nodeTemplateId, false);
-        if (scalableCapability != null) {
-            ScalingPolicy scalingPolicy = TopologyUtils.getScalingPolicy(scalableCapability);
-            return scalingPolicy.getInitialInstances();
-        }
-        return 1;
-    }
-
-    @Override
-    public void setConfiguration(ProviderConfig configuration) throws PluginConfigurationException {
-        // TODO Auto-generated method stub
-
     }
 
     @Override
@@ -140,18 +103,16 @@ public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<Provid
         String deploymentId = deploymentContext.getDeploymentPaaSId();
         try {
             providerLock.writeLock().lock();
-            DeploymentStatus deploymentStatus = getStatus(deploymentId, true);
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
             switch (deploymentStatus) {
                 case UNDEPLOYMENT_IN_PROGRESS:
                 case UNDEPLOYED:
                     throw new PaaSNotYetDeployedException("Application [" + deploymentId + "] is in status [" + deploymentStatus + "] and cannot be undeployed");
-                case UNKNOWN:
-                    throw new IllegalDeploymentStateException("Application [" + deploymentId + "] is in status [" + deploymentStatus + "] and cannot be undeployed");
                 case DEPLOYMENT_IN_PROGRESS:
                 case FAILURE:
                 case DEPLOYED:
                 case WARNING:
-                    doUndeploy(deploymentContext);
+                    doUndeploy(deploymentContext, callback);
                     break;
                 default:
                     throw new IllegalDeploymentStateException("Application [" + deploymentId + "] is in illegal status [" + deploymentStatus
@@ -162,15 +123,29 @@ public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<Provid
         }
     }
 
-    public DeploymentStatus getStatus(String deploymentId, boolean triggerEventIfUndeployed) {
+    /**
+     * Get the status of the deployment given by its PaaSDeploymentContext
+     * @param deploymentContext the deployment context
+     * @param callback callback when the status will be available
+     */
+    @Override
+    public void getStatus(PaaSDeploymentContext deploymentContext, IPaaSCallback<DeploymentStatus> callback) {
+        String deploymentId = deploymentContext.getDeploymentPaaSId();
         try {
             providerLock.readLock().lock();
-            return doGetStatus(deploymentId, triggerEventIfUndeployed);
+            DeploymentStatus status = doGetStatus(deploymentId);
+            callback.onSuccess(status);
         } finally {
             providerLock.readLock().unlock();
         }
     }
 
+    /**
+     * Called internally by threads of the plugin when the deployment status change
+     * @param applicationId
+     * @param status  new status
+     * @return old status
+     */
     protected DeploymentStatus changeStatus(String applicationId, DeploymentStatus status) {
         try {
             providerLock.writeLock().lock();
@@ -180,33 +155,118 @@ public abstract class AbstractPaaSProvider implements IOrchestratorPlugin<Provid
         }
     }
 
+    /**
+     * Execute an operation (custom command) on a node within a deployment
+     * @param deploymentContext the deployment context
+     * @param request An object of type {@link NodeOperationExecRequest} describing the operation's execution request
+     * @param callback
+     * @throws OperationExecutionException
+     */
     @Override
     public void executeOperation(PaaSTopologyDeploymentContext deploymentContext, NodeOperationExecRequest request, IPaaSCallback<Map<String, String>> callback)
             throws OperationExecutionException {
+        String deploymentId = deploymentContext.getDeploymentPaaSId();
+        String node = request.getNodeTemplateName();
+        String name = request.getOperationName();
         try {
             providerLock.writeLock().lock();
-            String doExecuteOperationResult = doExecuteOperation(request);
-            String resultException = null;
-            if (doExecuteOperationResult.equals("KO")) {
-                resultException = "Operation execution message when failing...";
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
+            switch (deploymentStatus) {
+                case DEPLOYED:
+                    doExecuteOperation(deploymentContext, request, callback);
+                    break;
+                default:
+                    throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in status [" + deploymentStatus + "] and operation " + name + " cannot be executed on node " + node);
             }
-            // Raise operation exception
-            if (resultException != null) {
-                callback.onFailure(new OperationExecutionException(resultException));
-            }
-            callback.onSuccess(MapUtil.newHashMap(new String[]{"1"}, new String[]{doExecuteOperationResult}));
         } finally {
             providerLock.writeLock().unlock();
         }
     }
 
+    /**
+     * Launch a workflow
+     * @param deploymentContext the deployment context
+     * @param name the workflow to launch
+     * @param inputs the workflow params
+     * @param callback
+     */
+    @Override
+    public void launchWorkflow(PaaSDeploymentContext deploymentContext, String name, Map<String, Object> inputs, final IPaaSCallback<?> callback) {
+        log.info("launchWorkflow " + name);
+        String deploymentId = deploymentContext.getDeploymentPaaSId();
+        try {
+            providerLock.writeLock().lock();
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
+            switch (deploymentStatus) {
+                case DEPLOYED:
+                    doLaunchWorkflow(deploymentContext, name, inputs, callback);
+                    break;
+                default:
+                    throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in status [" + deploymentStatus + "] and workflow " + name + " cannot be launched ");
+            }
+        } finally {
+            providerLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * Switch Maintenance Mode for all instances
+     * @param deploymentContext
+     * @param mode
+     */
+    @Override
+    public void switchMaintenanceMode(PaaSDeploymentContext deploymentContext, boolean mode) {
+        log.debug("switchInstanceMaintenanceMode order received for mode {}", mode);
+        String deploymentId = deploymentContext.getDeploymentPaaSId();
+        try {
+            providerLock.writeLock().lock();
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
+            switch (deploymentStatus) {
+                case DEPLOYED:
+                    doSwitchMaintenanceMode(deploymentContext, mode);
+                    break;
+                default:
+                    throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in status [" + deploymentStatus);
+            }
+        } finally {
+            providerLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * switch Maintenance Mode for this instance
+     * @param deploymentContext
+     * @param node
+     * @param instance
+     * @param mode
+     */
+    @Override
+    public void switchInstanceMaintenanceMode(PaaSDeploymentContext deploymentContext, String node, String instance, boolean mode) {
+        log.debug("switchInstanceMaintenanceMode order received for node {}, instance {}, mode {}", node, instance, mode);
+        String deploymentId = deploymentContext.getDeploymentPaaSId();
+        try {
+            providerLock.writeLock().lock();
+            DeploymentStatus deploymentStatus = doGetStatus(deploymentId);
+            switch (deploymentStatus) {
+                case DEPLOYED:
+                    doSwitchInstanceMaintenanceMode(deploymentContext, node, instance, mode);
+                    break;
+                default:
+                    throw new IllegalDeploymentStateException("Topology [" + deploymentId + "] is in status [" + deploymentStatus);
+            }
+        } finally {
+            providerLock.writeLock().unlock();
+        }
+    }
+
+    protected abstract void doSwitchMaintenanceMode(PaaSDeploymentContext deploymentContext, boolean mode);
+    protected abstract void doSwitchInstanceMaintenanceMode(PaaSDeploymentContext deploymentContext, String node, String instance, boolean mode);
     protected abstract DeploymentStatus doChangeStatus(String deploymentId, DeploymentStatus status);
+    protected abstract DeploymentStatus doGetStatus(String deploymentId);
+    protected abstract void doDeploy(PaaSTopologyDeploymentContext deploymentContext, IPaaSCallback<?> callback);
+    protected abstract void doScale(PaaSDeploymentContext deploymentContext, String nodeId, int nbi, IPaaSCallback<?> callback);
+    protected abstract void doUndeploy(PaaSDeploymentContext deploymentContext, IPaaSCallback<?> callback);
+    protected abstract void doExecuteOperation(PaaSDeploymentContext deploymentContext, NodeOperationExecRequest request, IPaaSCallback<Map<String, String>> callback);
+    protected abstract void doLaunchWorkflow(PaaSDeploymentContext deploymentContext, String workflowName, Map<String, Object> inputs, IPaaSCallback<?> callback);
 
-    protected abstract DeploymentStatus doGetStatus(String deploymentId, boolean triggerEventIfUndeployed);
-
-    protected abstract void doDeploy(PaaSTopologyDeploymentContext deploymentContext);
-
-    protected abstract void doUndeploy(PaaSDeploymentContext deploymentContext);
-
-    protected abstract String doExecuteOperation(NodeOperationExecRequest request);
 }

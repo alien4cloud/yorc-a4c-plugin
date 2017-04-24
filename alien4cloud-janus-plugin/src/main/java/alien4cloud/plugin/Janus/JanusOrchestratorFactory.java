@@ -6,22 +6,17 @@
 */
 package alien4cloud.plugin.Janus;
 
-import alien4cloud.model.components.PropertyConstraint;
-import alien4cloud.model.components.PropertyDefinition;
-import alien4cloud.model.components.constraints.GreaterOrEqualConstraint;
-import alien4cloud.model.components.constraints.PatternConstraint;
+import java.util.Map;
+
+import javax.annotation.Resource;
+
 import alien4cloud.model.orchestrators.ArtifactSupport;
 import alien4cloud.model.orchestrators.locations.LocationSupport;
 import alien4cloud.orchestrators.plugin.IOrchestratorPluginFactory;
-import alien4cloud.tosca.normative.ToscaType;
-import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
+import org.alien4cloud.tosca.model.definitions.PropertyDefinition;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.stereotype.Component;
-
-import javax.annotation.Resource;
-import java.util.Collections;
-import java.util.Map;
 
 /**
  * Factory for Mock implementation of orchestrator instance.
@@ -62,50 +57,13 @@ public class JanusOrchestratorFactory implements IOrchestratorPluginFactory<Janu
     @Override
     public ArtifactSupport getArtifactSupport() {
         // support all type of implementations artifacts
-        return new ArtifactSupport(new String[]{"tosca.artifacts.Implementation", "tosca.artifacts.ShellScript"});
+        return new ArtifactSupport(new String[]{"tosca.artifacts.Implementation.Python",
+                "tosca.artifacts.Implementation.Bash", "tosca.artifacts.Implementation.Ansible"});
     }
 
     @Override
     public Map<String, PropertyDefinition> getDeploymentPropertyDefinitions() {
-
-        // Field 1 : managerUrl as string
-        PropertyDefinition managerUrl = new PropertyDefinition();
-        managerUrl.setType(ToscaType.STRING);
-        managerUrl.setDefault("http://localhost:4242");
-        managerUrl.setRequired(false);
-        managerUrl.setDescription("PaaS manager URL");
-        managerUrl.setConstraints(null);
-        PatternConstraint manageUrlConstraint = new PatternConstraint();
-        manageUrlConstraint.setPattern("http://.+");
-        managerUrl.setConstraints(Collections.singletonList((PropertyConstraint) manageUrlConstraint));
-
-        // Field 2 : number backup with constraint
-        PropertyDefinition numberBackup = new PropertyDefinition();
-        numberBackup.setType(ToscaType.INTEGER);
-        numberBackup.setDefault("0606060606");
-        numberBackup.setRequired(false);
-        numberBackup.setDescription("Number of backup");
-        numberBackup.setConstraints(null);
-        GreaterOrEqualConstraint greaterOrEqualConstraint = new GreaterOrEqualConstraint();
-        greaterOrEqualConstraint.setGreaterOrEqual(String.valueOf("1"));
-        numberBackup.setConstraints(Lists.newArrayList((PropertyConstraint) greaterOrEqualConstraint));
-
-        // Field 3 : email manager
-        PropertyDefinition managerEmail = new PropertyDefinition();
-        managerEmail.setType(ToscaType.STRING);
-        managerEmail.setDefault("xBD@yopmail.com");
-        managerEmail.setRequired(false);
-        managerEmail.setDescription("PaaS manager email");
-        managerEmail.setConstraints(null);
-        PatternConstraint managerEmailConstraint = new PatternConstraint();
-        managerEmailConstraint.setPattern(".+@.+");
-        managerEmail.setConstraints(Collections.singletonList((PropertyConstraint) managerEmailConstraint));
-
-        deploymentProperties.put("managementUrl", managerUrl);
-        deploymentProperties.put("numberBackup", numberBackup);
-        deploymentProperties.put("managerEmail", managerEmail);
-
-        return deploymentProperties;
+        return this.deploymentProperties;
     }
 
     //    @Override
