@@ -10,8 +10,10 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Hashtable;
+import java.util.List;
 import java.util.Map;
 import java.util.Iterator;
 import java.security.KeyManagementException;
@@ -46,6 +48,7 @@ import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.apache.http.ssl.SSLContexts;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import lombok.extern.slf4j.Slf4j;
 
@@ -57,17 +60,12 @@ public class RestClient {
     // Default long pooling duration on Janus endpoints is 15 min
     private static final long SOCKET_TIMEOUT = 900000;
     private static final long CONNECTION_TIMEOUT = 10000;
-    private static RestClient instance;
     private static ObjectMapper objectMapper;
     private ProviderConfig providerConfiguration;
 
-    public static synchronized RestClient getInstance() {
-        if (instance == null) {
-            instance = new RestClient();
-            RestClient.initObjectMapper();
-            Unirest.setTimeouts(CONNECTION_TIMEOUT, SOCKET_TIMEOUT);
-        }
-        return instance;
+    public RestClient() {
+        RestClient.initObjectMapper();
+        Unirest.setTimeouts(CONNECTION_TIMEOUT, SOCKET_TIMEOUT);
     }
 
     private static void initObjectMapper() {
@@ -101,6 +99,13 @@ public class RestClient {
 
     public void setProviderConfiguration(ProviderConfig providerConfiguration) throws PluginConfigurationException {
         this.providerConfiguration = providerConfiguration;
+        log.debug("setProviderConfiguration JanusURL=" + providerConfiguration.getUrlJanus());
+        try {
+            getDeployments();
+        } catch (UnirestException e) {
+            log.warn("Cannot access Janus: " + e.getCause());
+            throw new PluginConfigurationException("Cannot access Janus: " + e.getCause());
+        }
         if (Boolean.TRUE.equals(providerConfiguration.getInsecureTLS())) {
             SSLContext sslContext;
             try {
@@ -126,6 +131,33 @@ public class RestClient {
             Unirest.setHttpClient(httpClient);
         }
 
+    }
+
+    /**
+     * Get the list of deployments known by janus
+     * @return List of deployments
+     */
+    public List<String> getDeployments() throws UnirestException {
+        List<String> ret = new ArrayList<>();
+        String fullUrl = providerConfiguration.getUrlJanus() + "/deployments";
+        log.debug("getDeployments " + fullUrl);
+        HttpResponse<JsonNode> res = Unirest.get(fullUrl)
+                .header("accept", "application/json")
+                .asJson();
+        if (res == null) {
+            log.debug("Cannot reach Janus: null response");
+            return null;
+        }
+        if (res.getBody() != null) {
+            JSONObject obj = res.getBody().getObject();
+            JSONArray array = obj.getJSONArray("deployments");
+            for (int i = 0 ; i < array.length() ; i++) {
+                String depl = array.getJSONObject(i).getString("href");
+                log.debug("Found a deployment in janus: " + depl);
+                ret.add(depl);
+            }
+        }
+        return ret;
     }
 
     /**
@@ -230,33 +262,30 @@ public class RestClient {
         return deployRes.getBody();
     }
 
-    public LogResponse getLogFromJanus(String deploymentUrl, int index) throws Exception {
+    public LogResponse getLogFromJanus(int index) throws Exception {
         HttpResponse<JsonNode> logRes =
-                Unirest.get(providerConfiguration.getUrlJanus() + deploymentUrl + "/logs?index=" + index + "&filter=")
+                Unirest.get(providerConfiguration.getUrlJanus() + "/logs?index=" + index + "&filter=")
                         .header("accept", "application/json")
                         .asJson();
         this.checkRestErrors(logRes);
         return objectMapper.readValue(new String(IOUtils.toByteArray(logRes.getRawBody()), CHARSET), LogResponse.class);
     }
 
-    public EventResponse getEventFromJanus(String deploymentUrl, int index) throws Exception {
+    public EventResponse getEventFromJanus(int index) throws Exception {
         HttpResponse<JsonNode> eventResponse =
-                Unirest.get(providerConfiguration.getUrlJanus() + deploymentUrl + "/events?index=" + index + "&filter=")
+                Unirest.get(providerConfiguration.getUrlJanus() + "/events?index=" + index + "&filter=")
                         .header("accept", "application/json")
                         .asJson();
         this.checkRestErrors(eventResponse);
         return objectMapper.readValue(new String(IOUtils.toByteArray(eventResponse.getRawBody()), CHARSET), EventResponse.class);
     }
 
-    public String undeployJanus(String deploymentUrl) throws Exception {
+    public String undeployJanus(String deploymentUrl, boolean purge) throws Exception {
         log.debug("undeployJanus " + deploymentUrl);
-        HttpResponse<JsonNode> res = Unirest.delete(providerConfiguration.getUrlJanus() + deploymentUrl + "?purge")
+        HttpResponse<JsonNode> res = Unirest.delete(providerConfiguration.getUrlJanus() + deploymentUrl + (purge ? "?purge" : "") )
                 .header("accept", "application/json")
                 .asJson();
         String task = res.getHeaders().getFirst("Location");
-        if (task == null) {
-            throw(new Exception("Undeploy returned no TaskId"));
-        }
         return task;
     }
 
