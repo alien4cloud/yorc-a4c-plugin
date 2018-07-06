@@ -151,14 +151,14 @@ public class LogListenerTask extends AlienTask {
         }
 
         if (content != null && EVENT_HANDLER_PATTERN.get().matcher(content.replaceAll("\\n", "")).matches()) {
+            // generate task and wfStepInstance
+            if (taskId == null) {
+                taskId = UUID.randomUUID().toString();
+                taskIds.put(taskKey, taskId);
+            } else {
+                // it's a new instance
+            }
             if (content.startsWith("Start the ansible execution of")) {
-                // generate task and wfStepInstance
-                if (taskId == null) {
-                    taskId = UUID.randomUUID().toString();
-                    taskIds.put(taskKey, taskId);
-                } else {
-                    // it's a new instance
-                }
                 String stepId = getStepId(pLogEvent);
                 if (stepId != null) {
                     WorkflowStepStartedEvent workflowStepStartedEvent = new WorkflowStepStartedEvent();
